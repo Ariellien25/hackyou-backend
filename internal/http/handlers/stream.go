@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -57,30 +56,24 @@ func (h *StreamHandler) WS(c *gin.Context) {
 		return nil
 	})
 
-	_ = conn.WriteJSON(gin.H{
-		"type": "hello",
-		"ts":   time.Now().UnixMilli(),
-	})
+	_ = conn.WriteJSON(gin.H{"type": "hello", "ts": time.Now().UnixMilli()})
 
-	for {
-		mt, msg, err := conn.ReadMessage()
-		if err != nil {
-			return
+	// 啟動一個 ticker 每 2 秒推一次
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+			// 可以在這裡統計 frame 數或丟棄，不用回覆
 		}
-		if mt != websocket.TextMessage && mt != websocket.BinaryMessage {
-			continue
-		}
+	}()
 
-		h.Repo.IncFrame(id)
-
-		var kind struct {
-			Type string `json:"type"`
-		}
-		_ = json.Unmarshal(msg, &kind)
-
+	for range ticker.C {
 		t := h.Tips.DecideTip()
 		h.Repo.AppendTip(id, *t)
-
 		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := conn.WriteJSON(gin.H{
 			"type":     "tip",

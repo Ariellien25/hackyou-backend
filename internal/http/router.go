@@ -14,13 +14,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func cors() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	}
+}
+
 func NewRouter(cfg config.Config) *gin.Engine {
 	r := gin.Default()
+	r.Use(cors())
+
 	repo := memory.NewSessionRepo()
 	svc := session.NewService(repo)
 	engine := tips.New()
 	hub := ws.NewHub()
 	tts := ttsprov.NewGoogleStub(cfg.TTSBase)
+
 	baseScheme := "http"
 	if os.Getenv("TLS") == "1" {
 		baseScheme = "https"
@@ -29,10 +45,12 @@ func NewRouter(cfg config.Config) *gin.Engine {
 	if host == "" {
 		host = "localhost:" + cfg.Port
 	}
+
 	sh := handlers.NewSessionsHandler(svc, baseScheme, host)
 	wsh := handlers.NewStreamHandler(hub, repo, engine, svc)
 	wh := handlers.NewWebRTCHandler()
 	th := handlers.NewTTSHandler(tts)
+
 	api := r.Group("/v1")
 	api.POST("/sessions", sh.Create)
 	api.GET("/sessions/:id/summary", sh.Summary)
