@@ -1,17 +1,17 @@
 package handlers
 
 import (
-	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 
 	"github.com/steveyiyo/hackyou-backend/internal/core/session"
 	"github.com/steveyiyo/hackyou-backend/internal/core/tips"
 	"github.com/steveyiyo/hackyou-backend/internal/repo/memory"
 	"github.com/steveyiyo/hackyou-backend/pkg/ws"
-
-	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 )
 
 type StreamHandler struct {
@@ -49,8 +49,19 @@ func (h *StreamHandler) WS(c *gin.Context) {
 		h.Hub.Remove(id)
 		conn.Close()
 	}()
-	conn.SetReadLimit(5 << 20)
+
+	conn.SetReadLimit(8 << 20)
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	_ = conn.WriteJSON(gin.H{
+		"type": "hello",
+		"ts":   time.Now().UnixMilli(),
+	})
+
 	for {
 		mt, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -59,13 +70,19 @@ func (h *StreamHandler) WS(c *gin.Context) {
 		if mt != websocket.TextMessage && mt != websocket.BinaryMessage {
 			continue
 		}
+
 		h.Repo.IncFrame(id)
-		if len(msg) > 0 {
-			_ = base64.StdEncoding
+
+		var kind struct {
+			Type string `json:"type"`
 		}
+		_ = json.Unmarshal(msg, &kind)
+
 		t := h.Tips.DecideTip()
 		h.Repo.AppendTip(id, *t)
-		_ = conn.WriteJSON(gin.H{
+
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if err := conn.WriteJSON(gin.H{
 			"type":     "tip",
 			"ts":       t.T,
 			"priority": t.Priority,
@@ -76,6 +93,8 @@ func (h *StreamHandler) WS(c *gin.Context) {
 				"roll_deg":  t.Roll,
 			},
 			"reason": t.Reason,
-		})
+		}); err != nil {
+			return
+		}
 	}
 }
