@@ -3,16 +3,18 @@ package config
 import "os"
 
 type Config struct {
-	Port      string
-	JWTSecret string
-	TTSBase   string
+	Port         string
+	JWTSecret    string
+	TTSBase      string
+	GeminiAPIKey string
 }
 
 func Load() Config {
 	return Config{
-		Port:      getenv("PORT", "8080"),
-		JWTSecret: getenv("JWT_SECRET", "devsecret"),
-		TTSBase:   getenv("TTS_BASE_URL", ""),
+		Port:         getenv("PORT", "8080"),
+		JWTSecret:    getenv("JWT_SECRET", "devsecret"),
+		TTSBase:      getenv("TTS_BASE_URL", ""),
+		GeminiAPIKey: getenv("GEMINI_API_KEY", ""),
 	}
 }
 
