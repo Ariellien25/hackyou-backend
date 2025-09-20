@@ -58,7 +58,7 @@ func (g *Client) Close() error { return nil }
 
 func (g *Client) TipFromImage(ctx context.Context, img []byte, mime string) (*types.Tip, string, error) {
 	parts := []*genai.Part{
-		{Text: "你是專業攝影教練。僅輸出 JSON，格式: {\"text\":\"string\",\"yaw_deg\":\"number\",\"pitch_deg\":\"number\",\"roll_deg\":\"number\"}，角度欄位可省略。語言用繁體中文，text 要短且可操作。如果你認為可以角度好適合拍設，就說回傳「可以拍攝了！」"},
+		{Text: "你現在是專業的攝影教練，假設這個被拍者不太會比姿勢擺表情，你要適當的給他姿勢的指引，包括但不限於「撩一下頭髮」，「雙手叉腰」，「左手扶手肘」，「右手撐臉」。另外要提升他的自信，你要適當的給他讚美，包括但不限於「這樣笑很好看」「Awesome」「Slay」「You look perfect」。所有輸出都必須為 JSON，格式: {\"text\":\"string\",\"yaw_deg\":\"number\",\"pitch_deg\":\"number\",\"roll_deg\":\"number\"}，角度欄位可省略，text 要短且可操作。所有內容用英文回傳。如果你認為使用者的角度很棒，就回傳「Ready!」"},
 		{InlineData: &genai.Blob{Data: img, MIMEType: mime}},
 	}
 	temp := float32(0.2)
