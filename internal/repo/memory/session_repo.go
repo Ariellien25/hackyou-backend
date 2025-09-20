@@ -8,28 +8,26 @@ import (
 )
 
 type Session struct {
-	ID         string
-	CreatedAt  time.Time
-	Mode       string
-	Locale     string
-	Device     map[string]string
-	Consent    map[string]bool
-	Tips       []types.Tip
-	Frames     int64
-	LatencyP50 int64
+	ID           string
+	CreatedAt    time.Time
+	Mode         string
+	Locale       string
+	Device       map[string]string
+	Consent      map[string]bool
+	Tips         []types.Tip
+	Frames       int64
+	LatencyP50   int64
+	LastFrame    []byte
+	LastFrameMIM string
 }
 
 type SessionRepo struct {
 	m sync.Map
 }
 
-func NewSessionRepo() *SessionRepo {
-	return &SessionRepo{}
-}
+func NewSessionRepo() *SessionRepo { return &SessionRepo{} }
 
-func (r *SessionRepo) Save(s *Session) {
-	r.m.Store(s.ID, s)
-}
+func (r *SessionRepo) Save(s *Session) { r.m.Store(s.ID, s) }
 
 func (r *SessionRepo) Get(id string) (*Session, bool) {
 	v, ok := r.m.Load(id)
@@ -56,5 +54,16 @@ func (r *SessionRepo) IncFrame(id string) {
 	}
 	s := v.(*Session)
 	s.Frames++
+	r.m.Store(id, s)
+}
+
+func (r *SessionRepo) SetFrame(id, mime string, b []byte) {
+	v, ok := r.m.Load(id)
+	if !ok {
+		return
+	}
+	s := v.(*Session)
+	s.LastFrame = b
+	s.LastFrameMIM = mime
 	r.m.Store(id, s)
 }
