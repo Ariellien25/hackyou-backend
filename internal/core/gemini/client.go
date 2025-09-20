@@ -58,12 +58,12 @@ func (g *Client) Close() error { return nil }
 
 func (g *Client) TipFromImage(ctx context.Context, img []byte, mime string) (*types.Tip, string, error) {
 	parts := []*genai.Part{
-		{Text: "你是專業攝影教練。僅輸出 JSON，格式: {\"text\":\"string\",\"yaw_deg\":\"number\",\"pitch_deg\":\"number\",\"roll_deg\":\"number\"}，角度欄位可省略。語言用繁體中文，text 要短且可操作。"},
+		{Text: "你是專業攝影教練。僅輸出 JSON，格式: {\"text\":\"string\",\"yaw_deg\":\"number\",\"pitch_deg\":\"number\",\"roll_deg\":\"number\"}，角度欄位可省略。語言用繁體中文，text 要短且可操作。如果你認為可以角度好適合拍設，就說回傳「可以拍攝了！」"},
 		{InlineData: &genai.Blob{Data: img, MIMEType: mime}},
 	}
 	temp := float32(0.2)
 	topP := float32(0.8)
-	maxTok := int32(512)
+	maxTok := int32(12400)
 	cfgJSON := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
 		ResponseSchema: &genai.Schema{
@@ -177,6 +177,7 @@ func parseTip(resp *genai.GenerateContentResponse) (*types.Tip, string, bool) {
 				}
 				if p.Text != "" {
 					raw = p.Text
+					fmt.Printf("!!!!! %s", raw)
 					var tmp types.Tip
 					if json.Unmarshal([]byte(p.Text), &tmp) == nil && tmp.Text != "" {
 						return &tmp, raw, true
