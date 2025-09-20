@@ -1,25 +1,39 @@
 package handlers
 
 import (
-	"log"
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/steveyiyo/hackyou-backend/internal/config"
+
 	"github.com/steveyiyo/hackyou-backend/internal/core/gemini"
+	"github.com/steveyiyo/hackyou-backend/internal/core/session"
+	"github.com/steveyiyo/hackyou-backend/internal/core/tips"
+	"github.com/steveyiyo/hackyou-backend/internal/repo/memory"
+	"github.com/steveyiyo/hackyou-backend/pkg/types"
 	"github.com/steveyiyo/hackyou-backend/pkg/ws"
 )
 
 type StreamHandler struct {
 	Hub      *ws.Hub
+	Repo     *memory.SessionRepo
+	Tips     *tips.Engine
+	Sess     *session.Service
+	Gem      *gemini.Client
 	Upgrader websocket.Upgrader
 }
 
-func NewStreamHandler(h *ws.Hub) *StreamHandler {
+func NewStreamHandler(h *ws.Hub, r *memory.SessionRepo, e *tips.Engine, s *session.Service, g *gemini.Client) *StreamHandler {
 	return &StreamHandler{
-		Hub: h,
+		Hub:  h,
+		Repo: r,
+		Tips: e,
+		Sess: s,
+		Gem:  g,
 		Upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -32,61 +46,135 @@ func (h *StreamHandler) WS(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	clientConn, err := h.Upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := h.Upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("Failed to upgrade connection: %v", err)
 		return
 	}
-	h.Hub.Add(id, clientConn)
+	h.Hub.Add(id, conn)
 	defer func() {
 		h.Hub.Remove(id)
-		clientConn.Close()
+		conn.Close()
 	}()
 
-	cfg := config.Load()
-	liveClient := gemini.NewLiveClient()
-	if err := liveClient.StartStreamingSession(cfg.GeminiAPIKey); err != nil {
-		log.Printf("Failed to start Gemini session: %v", err)
-		clientConn.WriteMessage(websocket.TextMessage, []byte("Error: Could not connect to analysis service."))
-		return
-	}
-	defer liveClient.Close()
+	conn.SetReadLimit(8 << 20)
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
 
-	// Goroutine to proxy advice from Gemini to the client
-	adviceChan, err := liveClient.ReceiveAdvice()
-	if err != nil {
-		log.Printf("Failed to get advice channel: %v", err)
-		clientConn.WriteMessage(websocket.TextMessage, []byte("Error: Could not receive advice from service."))
-		return
+	_ = conn.WriteJSON(gin.H{"type": "hello", "ts": time.Now().UnixMilli()})
+
+	type frameMsg struct {
+		Type        string `json:"type"`
+		Bytes       string `json:"bytes"`
+		ContentType string `json:"content_type"`
 	}
+
+	done := make(chan struct{})
+	started := make(chan struct{}, 1)
+	startOnce := false
 
 	go func() {
-		for advice := range adviceChan {
-			if err := clientConn.WriteJSON(gin.H{"type": "tip", "source": "gemini", "text": advice}); err != nil {
-				log.Printf("Error sending advice to client: %v", err)
+		for {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
+				close(done)
 				return
+			}
+			if mt != websocket.TextMessage && mt != websocket.BinaryMessage {
+				continue
+			}
+			h.Repo.IncFrame(id)
+			var fm frameMsg
+			if json.Unmarshal(msg, &fm) == nil && fm.Bytes != "" && fm.ContentType != "" {
+				if b, err := base64.StdEncoding.DecodeString(fm.Bytes); err == nil {
+					h.Repo.SetFrame(id, fm.ContentType, b)
+				}
+			}
+			if !startOnce {
+				startOnce = true
+				select {
+				case started <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}()
 
-	// Main loop to read frames from client and send to Gemini
+	interval := 2 * time.Second
+	var next time.Time
+	ctx := context.Background()
+
 	for {
-		_, message, err := clientConn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("Client connection error: %v", err)
+		if next.IsZero() {
+			select {
+			case <-done:
+				return
+			case <-started:
+				next = time.Now().Add(interval)
 			}
-			break // Exit loop on client disconnect
+			continue
 		}
-
-		// For now, we assume the message is the raw image bytes.
-		// A more robust implementation would parse a JSON message like the original code.
-		// Refined version (simpler and more efficient)
-		if err := liveClient.SendImageFrame(message); err != nil {
-			log.Printf("Failed to send image frame: %v", err)
+		d := time.Until(next)
+		if d < 0 {
+			d = 0
 		}
+		timer := time.NewTimer(d)
+		select {
+		case <-done:
+			timer.Stop()
+			return
+		case <-timer.C:
+			sess, ok := h.Repo.Get(id)
+			if !ok {
+				return
+			}
 
-		// Smart Sampling: Wait before processing the next frame.
-		time.Sleep(2 * time.Second)
+			var out types.Tip
+			var respRaw string
+			var usedGemini bool
+
+			if h.Gem != nil && len(sess.LastFrame) > 0 && sess.LastFrameMIM != "" {
+				if tip, raw, err := h.Gem.TipFromImage(ctx, sess.LastFrame, sess.LastFrameMIM); err == nil && tip != nil {
+					out = *tip
+					respRaw = raw
+					usedGemini = true
+				} else {
+					t := h.Tips.DecideTip()
+					out = *t
+				}
+			} else {
+				t := h.Tips.DecideTip()
+				out = *t
+			}
+
+			h.Repo.AppendTip(id, out)
+
+			m := gin.H{
+				"type":     "tip",
+				"ts":       out.T,
+				"priority": out.Priority,
+				"text":     out.Text,
+				"hint": gin.H{
+					"yaw_deg":   out.Yaw,
+					"pitch_deg": out.Pitch,
+					"roll_deg":  out.Roll,
+				},
+				"reason": out.Reason,
+			}
+			if usedGemini {
+				m["source"] = "gemini"
+				m["resp"] = respRaw
+			} else {
+				m["source"] = "stub"
+			}
+
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.WriteJSON(m); err != nil {
+				return
+			}
+			next = next.Add(interval)
+		}
 	}
 }

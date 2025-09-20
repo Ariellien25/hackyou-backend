@@ -54,7 +54,7 @@ func (g *Client) TipFromImage(ctx context.Context, img []byte, mime string) (*ty
 
 	temp := float32(0.2)
 	topP := float32(0.8)
-	maxTok := int32(128)
+	maxTok := int32(12800)
 
 	cfgJSON := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
